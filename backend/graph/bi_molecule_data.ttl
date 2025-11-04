@@ -1,0 +1,29 @@
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix bi:   <http://example.com/bi#> .
+@prefix drug: <http://example.com/bi/drug/> .
+@prefix dis:  <http://example.com/bi/disease/> .
+@prefix tgt:  <http://example.com/bi/target/> .
+
+drug:jardiance  rdf:type bi:Drug ;
+    rdfs:label "Jardiance" ;
+    bi:hasActiveIngredient  bi:empagliflozin ;
+    bi:indicatedFor         dis:Type2Diabetes ;
+    bi:indicatedFor         dis:HeartFailure ;
+    bi:belongsToTherapeuticArea bi:CardioRenalMetabolic .
+
+bi:empagliflozin rdf:type bi:ActiveIngredient ;
+    rdfs:label "Empagliflozin" ;
+    bi:inhibits tgt:SGLT2 .
+
+tgt:SGLT2 rdf:type bi:ProteinTarget ;
+    rdfs:label "Sodium glucose co transporter 2" .
+
+dis:Type2Diabetes rdf:type bi:Disease ;
+    rdfs:label "Type 2 diabetes mellitus" .
+
+dis:HeartFailure rdf:type bi:Disease ;
+    rdfs:label "Heart failure" .
+
+bi:CardioRenalMetabolic rdf:type bi:TherapeuticArea ;
+    rdfs:label "Cardio renal metabolic" .

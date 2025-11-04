@@ -1,0 +1,29 @@
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix bi:   <http://example.com/bi#> .
+@prefix drug: <http://example.com/bi/drug/> .
+@prefix dis:  <http://example.com/bi/disease/> .
+@prefix tgt:  <http://example.com/bi/target/> .
+
+bi:Drug            rdf:type rdfs:Class .
+bi:ActiveIngredient rdf:type rdfs:Class .
+bi:ProteinTarget   rdf:type rdfs:Class .
+bi:Disease         rdf:type rdfs:Class .
+bi:TherapeuticArea rdf:type rdfs:Class .
+
+bi:hasActiveIngredient rdf:type rdf:Property ;
+    rdfs:domain bi:Drug ;
+    rdfs:range  bi:ActiveIngredient .
+
+bi:inhibits rdf:type rdf:Property ;
+    rdfs:domain bi:ActiveIngredient ;
+    rdfs:range  bi:ProteinTarget .
+
+bi:indicatedFor rdf:type rdf:Property ;
+    rdfs:domain bi:Drug ;
+    rdfs:range  bi:Disease .
+
+bi:belongsToTherapeuticArea rdf:type rdf:Property ;
+    rdfs:domain bi:Drug ;
+    rdfs:range  bi:TherapeuticArea .

@@ -1,0 +1,16 @@
+[project]
+name = "bi-genai-molecule-graph"
+version = "0.1.0"
+description = "Demo GenAI assistant for Boehringer Ingelheim style molecule graph"
+requires-python = ">=3.10"
+
+[project.dependencies]
+fastapi = "*"
+uvicorn = "*"
+langgraph = "*"
+pydantic = "*"
+openai = "*"
+httpx = "*"
+python-dotenv = "*"
+pinecone-client = "*"
+rdflib = "*"

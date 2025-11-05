@@ -7,21 +7,34 @@ from pydantic import BaseModel
 
 from langgraph.graph import StateGraph, END
 from openai import OpenAI
-from pinecone import Pinecone
+
+import chromadb
+from chromadb.utils import embedding_functions
 
 from backend.config import (
     OPENAI_API_KEY,
-    PINECONE_API_KEY,
     DATABRICKS_TOKEN,
     DATABRICKS_SQL_URL,
     DATABRICKS_WAREHOUSE_ID,
     SPARQL_ENDPOINT,
     FRONTEND_ORIGIN,
+    VECTOR_STORE_DIR,
+    VECTOR_COLLECTION_NAME,
 )
 
+# OpenAI client
 oai_client = OpenAI(api_key=OPENAI_API_KEY)
-pc = Pinecone(api_key=PINECONE_API_KEY)
-pinecone_index = pc.Index("bi-medical-rag")
+
+# Local Chroma vector store
+chroma_client = chromadb.PersistentClient(path=VECTOR_STORE_DIR)
+chroma_embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
+    api_key=OPENAI_API_KEY,
+    model_name="text-embedding-3-large",
+)
+vector_collection = chroma_client.get_or_create_collection(
+    name=VECTOR_COLLECTION_NAME,
+    embedding_function=chroma_embedding_fn,
+)
 
 
 class AgentState(BaseModel):
@@ -117,32 +130,33 @@ async def sql_retriever(state: AgentState) -> AgentState:
     return state
 
 
-def embed_query(text: str) -> list[float]:
-    emb = oai_client.embeddings.create(
-        model="text-embedding-3-large",
-        input=text,
-    )
-    return emb.data[0].embedding
-
-
 async def rag_retriever(state: AgentState) -> AgentState:
-    vec = embed_query(state.query)
-    res = pinecone_index.query(
-        vector=vec,
-        top_k=5,
-        include_values=False,
-        include_metadata=True,
+    """
+    Retrieve RAG context from a local Chroma collection.
+
+    You must have populated the collection beforehand with an ingestion script
+    that calls collection.upsert(documents=..., ids=..., metadatas=...).
+    """
+    res = vector_collection.query(
+        query_texts=[state.query],
+        n_results=5,
     )
+
     rows: List[Dict[str, Any]] = []
-    for m in res.get("matches", []):
-        meta = m["metadata"]
+    ids = res.get("ids", [[]])[0]
+    docs = res.get("documents", [[]])[0]
+    metas = res.get("metadatas", [[]])[0]
+
+    for i in range(len(ids)):
+        meta = metas[i] or {}
         rows.append(
             {
-                "text": meta.get("text", ""),
-                "source": meta.get("url", ""),
-                "doc_id": meta.get("doc_id", ""),
+                "text": docs[i],
+                "source": meta.get("url") or meta.get("source", ""),
+                "doc_id": meta.get("doc_id", ids[i]),
             }
         )
+
     state.rag_results = rows
     return state
 

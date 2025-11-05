@@ -13,3 +13,11 @@ DATABRICKS_WAREHOUSE_ID = os.getenv("DATABRICKS_WAREHOUSE_ID", "")
 SPARQL_ENDPOINT = os.getenv("SPARQL_ENDPOINT", "")
 
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+
+
+def VECTOR_STORE_DIR():
+    return None
+
+
+def VECTOR_COLLECTION_NAME():
+    return None

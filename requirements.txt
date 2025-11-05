@@ -1,0 +1,36 @@
+# === Core Vector + DB ===
+chromadb==0.5.4
+faiss-cpu==1.8.0
+sqlalchemy==2.0.32
+sqlite-utils==3.36.0
+
+# === LangChain + LangGraph ===
+langchain==0.3.5
+langchain-community==0.3.2
+langgraph==0.1.10
+
+# === Embeddings + Models ===
+sentence-transformers==3.0.1
+openai==1.44.0
+tiktoken==0.7.0
+
+# === API + Backend ===
+fastapi==0.115.2
+uvicorn==0.30.3
+pydantic==2.9.2
+python-dotenv==1.0.1
+
+# === Utilities ===
+pandas==2.2.3
+numpy==1.26.4
+
+pip~=25.3
+attrs~=24.2.0
+distro~=1.9.0
+protobuf~=6.33.0
+pillow~=12.0.0
+Jinja2~=3.1.4
+filelock~=3.20.0
+httpx~=0.28.1
+rdflib~=7.4.0
+pinecone-client~=6.0.0

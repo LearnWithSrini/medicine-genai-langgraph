@@ -1,0 +1,5 @@
+drug_name,trial_name,citation,year,doi
+DrugA,DRUGA-301,"Efficacy and Safety of DrugA in Type 2 Diabetes Mellitus",2021,10.1001/druga.2021.301
+DrugA,DRUGA-302,"Comparison of DrugA vs Sitagliptin for Glycaemic Control",2022,10.1002/druga.2022.302
+DrugB,DRUGB-101,"DrugB Phase II Study in Hypertension",2020,10.1001/drugb.2020.101
+DrugC,DRUGC-201,"DrugC Mechanism of Action in Lipid Metabolism",2023,10.1001/drugc.2023.201

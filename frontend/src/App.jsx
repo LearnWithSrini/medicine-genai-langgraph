@@ -98,7 +98,7 @@ function App() {
           style={{
             marginTop: 24,
             padding: 16,
-            border: "1px solid "#ccc",
+            border: "1px solid #ccc",
             borderRadius: 4,
             backgroundColor: "#fafafa"
           }}

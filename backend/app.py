@@ -14,7 +14,7 @@ from chromadb.utils import embedding_functions
 from backend.config import (
     OPENAI_API_KEY,
     DATABRICKS_TOKEN,
-    DATABRICKS_SQL_URL,
+    DATABRICKS_SERVER_HOSTNAME,
     DATABRICKS_WAREHOUSE_ID,
     SPARQL_ENDPOINT,
     FRONTEND_ORIGIN,
@@ -32,8 +32,8 @@ chroma_embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
     model_name="text-embedding-3-large",
 )
 vector_collection = chroma_client.get_or_create_collection(
-    name=VECTOR_COLLECTION_NAME,
-    embedding_function=chroma_embedding_fn,
+    name="bi-medical-rag",
+    embedding_function=chroma_embedding_fn
 )
 
 
@@ -105,7 +105,7 @@ async def sql_retriever(state: AgentState) -> AgentState:
     """
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{DATABRICKS_SQL_URL}/api/2.0/sql/statements",
+            f"{DATABRICKS_SERVER_HOSTNAME}/api/2.0/sql/statements",
             headers={"Authorization": f"Bearer {DATABRICKS_TOKEN}"},
             json={"statement": sql, "warehouse_id": DATABRICKS_WAREHOUSE_ID},
             timeout=30,
@@ -216,18 +216,20 @@ async def answer_node(state: AgentState) -> AgentState:
 
 
 def build_workflow():
+    print("SPARQL_ENDPOINT =", SPARQL_ENDPOINT)
+
     workflow = StateGraph(AgentState)
 
     workflow.add_node("graph_retriever", graph_retriever)
     workflow.add_node("sql_retriever", sql_retriever)
     workflow.add_node("rag_retriever", rag_retriever)
-    workflow.add_node("answer", answer_node)
+    workflow.add_node("answer_step", answer_node)
 
     workflow.set_entry_point("graph_retriever")
     workflow.add_edge("graph_retriever", "sql_retriever")
     workflow.add_edge("sql_retriever", "rag_retriever")
-    workflow.add_edge("rag_retriever", "answer")
-    workflow.add_edge("answer", END)
+    workflow.add_edge("rag_retriever", "answer_step")
+    workflow.add_edge("answer_step", END)
 
     return workflow.compile()
 
@@ -251,14 +253,58 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    init_state = AgentState(
-        messages=[{"role": "user", "content": req.query}],
-        query=req.query,
-    )
-    result_state = await graph_app.ainvoke(init_state)
-    return {
-        "answer": result_state.answer,
-        "graph_results": result_state.graph_results,
-        "sql_results": result_state.sql_results,
-        "rag_results": result_state.rag_results,
+    # Pass a plain dict as initial state
+    init_state = {
+        "messages": [],
+        "query": req.query,
     }
+
+    result_state = await graph_app.ainvoke(init_state)
+
+    # result_state is an AddableValuesDict (dict-like), so use key access
+    return {
+        "answer":      result_state.get("answer"),
+        "graph_results": result_state.get("graph_results"),
+        "sql_results":   result_state.get("sql_results"),
+        "rag_results":   result_state.get("rag_results"),
+    }
+
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+# ... existing imports and app definition ...
+
+from fastapi.responses import JSONResponse
+
+@app.post("/chat_debug")
+async def chat_debug(req: ChatRequest):
+    init_state = {
+        "messages": [],
+        "query": req.query,
+    }
+
+    events_summary = []
+
+    async for ev in graph_app.astream_events(init_state, version="v2"):
+        # Optional: uncomment to see raw events once
+        # print("EVENT:", ev)
+
+        # We only care about node-level "on_end" events
+        if ev.get("event") == "on_end" and ev.get("metadata", {}).get("source") == "node":
+            node_name = ev["metadata"]["node"]
+            state = ev["data"]["state"]
+
+            events_summary.append(
+                {
+                    "node": node_name,
+                    "query": state.get("query"),
+                    "graph_results_len": len(state.get("graph_results") or []),
+                    "sql_results_len": len(state.get("sql_results") or []),
+                    "rag_results_len": len(state.get("rag_results") or []),
+                    "answer": state.get("answer"),
+                }
+            )
+
+    return JSONResponse(content={"events": events_summary})
+

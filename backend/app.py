@@ -1,8 +1,12 @@
 from typing import List, Dict, Any, Optional
 
+import json
+import sqlite3
+
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from langgraph.graph import StateGraph, END
@@ -13,10 +17,8 @@ from chromadb.utils import embedding_functions
 
 from backend.config import (
     OPENAI_API_KEY,
-    DATABRICKS_TOKEN,
-    DATABRICKS_SERVER_HOSTNAME,
-    DATABRICKS_WAREHOUSE_ID,
     SPARQL_ENDPOINT,
+    LOCAL_SQLITE_PATH,
     FRONTEND_ORIGIN,
     VECTOR_STORE_DIR,
     VECTOR_COLLECTION_NAME,
@@ -32,7 +34,7 @@ chroma_embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
     model_name="text-embedding-3-large",
 )
 vector_collection = chroma_client.get_or_create_collection(
-    name="bi-medical-rag",
+    name=VECTOR_COLLECTION_NAME,
     embedding_function=chroma_embedding_fn
 )
 
@@ -41,31 +43,40 @@ class AgentState(BaseModel):
     messages: List[Dict[str, Any]]
     query: str
     graph_results: Optional[List[Dict[str, Any]]] = None
-    sql_results: Optional[List[Dict[str, Any]]] = None
+    sql_results: Optional[List[Dict[str, Any]]] = None  # will hold citations
     rag_results: Optional[List[Dict[str, Any]]] = None
     answer: Optional[str] = None
 
 
+# -------------------------
+# GraphDB retriever (RDF)
+# -------------------------
 async def graph_retriever(state: AgentState) -> AgentState:
-    q = state.query
+    q = state.query.strip()
+    # very small escape to avoid breaking the SPARQL with quotes
+    q_escaped = q.replace('"', '\\"')
+
     sparql = f"""
-    PREFIX bi:   <http://example.com/bi#>
-    PREFIX dis:  <http://example.com/bi/disease/>
+    PREFIX drug: <http://example.org/drug/>
+    PREFIX dbo:  <http://dbpedia.org/ontology/>
     PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 
-    SELECT ?drugLabel ?diseaseLabel ?targetLabel
+    SELECT ?drug ?label ?synonym ?moa ?indication
     WHERE {{
-      ?drug a bi:Drug ;
-            rdfs:label ?drugLabel ;
-            bi:indicatedFor ?disease ;
-            bi:hasActiveIngredient ?ai .
-      ?disease rdfs:label ?diseaseLabel .
-      ?ai bi:inhibits ?target .
-      ?target rdfs:label ?targetLabel .
-      FILTER(CONTAINS(LCASE(?diseaseLabel), LCASE("{q}")))
+      ?drug a dbo:Drug ;
+            rdfs:label ?label .
+      OPTIONAL {{ ?drug dbo:synonym ?synonym . }}
+      OPTIONAL {{ ?drug dbo:mechanismOfAction ?moa . }}
+      OPTIONAL {{ ?drug dbo:indication ?indication . }}
+
+      FILTER(
+        CONTAINS(LCASE(?label), LCASE("paracetmol")) ||
+        CONTAINS(LCASE(COALESCE(?synonym, "")), LCASE("paracetmol"))
+      )
     }}
     LIMIT 10
     """
+
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             SPARQL_ENDPOINT,
@@ -74,71 +85,82 @@ async def graph_retriever(state: AgentState) -> AgentState:
             timeout=20,
         )
     data = resp.json()
+
     rows: List[Dict[str, Any]] = []
     for b in data.get("results", {}).get("bindings", []):
         rows.append(
             {
-                "drug": b["drugLabel"]["value"],
-                "disease": b["diseaseLabel"]["value"],
-                "target": b["targetLabel"]["value"],
+                "iri": b["drug"]["value"],
+                "label": b.get("label", {}).get("value", ""),
+                "synonym": b.get("synonym", {}).get("value", ""),
+                "mechanism_of_action": b.get("moa", {}).get("value", ""),
+                "indication": b.get("indication", {}).get("value", ""),
             }
         )
+
     state.graph_results = rows
     return state
 
 
-async def sql_retriever(state: AgentState) -> AgentState:
-    sql = f"""
-    SELECT d.brand_name,
-           ds.name as disease_name,
-           f.trial_id,
-           f.endpoint_code,
-           f.hr,
-           f.ci_low,
-           f.ci_high,
-           f.p_value
-    FROM bi.fact_trial_outcome f
-    JOIN bi.dim_drug d     ON f.drug_id = d.drug_id
-    JOIN bi.dim_disease ds ON f.disease_id = ds.disease_id
-    WHERE LOWER(ds.name) LIKE LOWER('%{state.query}%')
-    LIMIT 10
+# -------------------------
+# SQLite citations retriever
+# -------------------------
+def _run_citations_query(query_text: str) -> List[Dict[str, Any]]:
+    conn = sqlite3.connect(LOCAL_SQLITE_PATH)
+    cur = conn.cursor()
+
+    # simple search on title / abstract / keywords
+    sql = """
+    SELECT id, title, abstract, source, keywords
+    FROM citations
+    WHERE
+        LOWER(title)    LIKE '%' || LOWER(?) || '%' OR
+        LOWER(abstract) LIKE '%' || LOWER(?) || '%' OR
+        LOWER(keywords) LIKE '%' || LOWER(?) || '%'
+    LIMIT 10;
     """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{DATABRICKS_SERVER_HOSTNAME}/api/2.0/sql/statements",
-            headers={"Authorization": f"Bearer {DATABRICKS_TOKEN}"},
-            json={"statement": sql, "warehouse_id": DATABRICKS_WAREHOUSE_ID},
-            timeout=30,
-        )
-    stmt = resp.json()
-    rows: List[Dict[str, Any]] = []
-    result = stmt.get("result", {})
-    for row in result.get("data_array", []):
-        rows.append(
+
+    cur.execute(sql, ("paracetmol", "paracetmol", "paracetmol"))
+    rows = cur.fetchall()
+    conn.close()
+
+    results: List[Dict[str, Any]] = []
+    for r in rows:
+        results.append(
             {
-                "brand_name": row[0],
-                "disease_name": row[1],
-                "trial_id": row[2],
-                "endpoint_code": row[3],
-                "hr": row[4],
-                "ci_low": row[5],
-                "ci_high": row[6],
-                "p_value": row[7],
+                "id": r[0],
+                "title": r[1],
+                "abstract": r[2],
+                "source": r[3],
+                "keywords": r[4],
             }
         )
+    return results
+
+
+async def sql_retriever(state: AgentState) -> AgentState:
+    # For now we call sqlite synchronously; for heavy load you can offload to a thread pool
+    rows = _run_citations_query(state.query.strip())
     state.sql_results = rows
     return state
 
 
+# -------------------------
+# Chroma RAG retriever
+# -------------------------
 async def rag_retriever(state: AgentState) -> AgentState:
     """
     Retrieve RAG context from a local Chroma collection.
 
-    You must have populated the collection beforehand with an ingestion script
-    that calls collection.upsert(documents=..., ids=..., metadatas=...).
+    Assumes you have ingested documents with something like:
+        collection.add(
+            ids=[...],
+            documents=[...],
+            metadatas=[{"source": "...", "topic": "...", "chunk_index": 0}, ...]
+        )
     """
     res = vector_collection.query(
-        query_texts=[state.query],
+        query_texts=["paracetmol"],
         n_results=5,
     )
 
@@ -152,8 +174,10 @@ async def rag_retriever(state: AgentState) -> AgentState:
         rows.append(
             {
                 "text": docs[i],
-                "source": meta.get("url") or meta.get("source", ""),
-                "doc_id": meta.get("doc_id", ids[i]),
+                "source": meta.get("source", ""),
+                "topic": meta.get("topic", ""),
+                "chunk_index": meta.get("chunk_index", i),
+                "doc_id": ids[i],
             }
         )
 
@@ -161,42 +185,55 @@ async def rag_retriever(state: AgentState) -> AgentState:
     return state
 
 
+# -------------------------
+# Answer node
+# -------------------------
 async def answer_node(state: AgentState) -> AgentState:
     system_prompt = (
-        "You are a cautious medical assistant for internal pharmaceutical staff. "
-        "Use only the provided graph results, SQL results and document snippets. "
-        "Explain mechanisms and trial outcomes clearly. "
-        "If data is missing, say that clearly."
+        "You are a cautious internal medical assistant. "
+        "Use only the provided graph results (from an RDF knowledge graph), "
+        "citations (from the SQLite 'citations' table), and document snippets (from a vector store). "
+        "Explain mechanisms and clinical points clearly. "
+        "If data is missing, say that clearly instead of guessing."
     )
 
     parts: List[str] = []
+
     if state.graph_results:
         parts.append(
             "GRAPH RESULTS:\n"
             + "\n".join(
-                f"- Drug {r['drug']} for {r['disease']} with target {r['target']}"
+                f"- Drug {r.get('label') or '[no label]'} "
+                f"(synonym: {r.get('synonym') or 'n/a'}) "
+                f"indication: {r.get('indication') or 'n/a'} "
+                f"MOA: {r.get('mechanism_of_action') or 'n/a'}"
                 for r in state.graph_results
             )
         )
+
     if state.sql_results:
         parts.append(
-            "TRIAL DATA:\n"
+            "CITATIONS:\n"
             + "\n".join(
-                f"- Trial {r['trial_id']} endpoint {r['endpoint_code']}, HR {r['hr']}, "
-                f"CI [{r['ci_low']}, {r['ci_high']}], p={r['p_value']}"
+                f"- [{r['id']}] {r['title']} "
+                f"(source: {r['source']}) "
+                f"keywords: {r['keywords']}\n"
+                f"  abstract: {r['abstract'][:300]}..."
                 for r in state.sql_results
             )
         )
+
     if state.rag_results:
         parts.append(
             "DOCUMENT SNIPPETS:\n"
             + "\n".join(
-                f"- Doc {r['doc_id']}: {r['text'][:400]}"
+                f"- Doc {r['doc_id']} (source: {r['source']}, topic: {r['topic']}): "
+                f"{r['text'][:400]}"
                 for r in state.rag_results
             )
         )
 
-    context = "\n\n".join(parts) if parts else "No extra external data was retrieved."
+    context = "\n\n".join(parts) if parts else "No external data was retrieved."
 
     resp = oai_client.chat.completions.create(
         model="gpt-4.1-mini",
@@ -215,8 +252,14 @@ async def answer_node(state: AgentState) -> AgentState:
     return state
 
 
+# -------------------------
+# LangGraph workflow
+# -------------------------
 def build_workflow():
     print("SPARQL_ENDPOINT =", SPARQL_ENDPOINT)
+    print("SQLITE_DB_PATH  =", LOCAL_SQLITE_PATH)
+    print("VECTOR_STORE_DIR =", VECTOR_STORE_DIR)
+    print("VECTOR_COLLECTION_NAME =", VECTOR_COLLECTION_NAME)
 
     workflow = StateGraph(AgentState)
 
@@ -236,6 +279,10 @@ def build_workflow():
 
 graph_app = build_workflow()
 
+
+# -------------------------
+# FastAPI app
+# -------------------------
 app = FastAPI()
 
 app.add_middleware(
@@ -253,7 +300,6 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    # Pass a plain dict as initial state
     init_state = {
         "messages": [],
         "query": req.query,
@@ -261,21 +307,13 @@ async def chat(req: ChatRequest):
 
     result_state = await graph_app.ainvoke(init_state)
 
-    # result_state is an AddableValuesDict (dict-like), so use key access
     return {
-        "answer":      result_state.get("answer"),
+        "answer": result_state.get("answer"),
         "graph_results": result_state.get("graph_results"),
-        "sql_results":   result_state.get("sql_results"),
-        "rag_results":   result_state.get("rag_results"),
+        "sql_results": result_state.get("sql_results"),   # citations
+        "rag_results": result_state.get("rag_results"),
     }
 
-
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-
-# ... existing imports and app definition ...
-
-from fastapi.responses import JSONResponse
 
 @app.post("/chat_debug")
 async def chat_debug(req: ChatRequest):
@@ -287,10 +325,6 @@ async def chat_debug(req: ChatRequest):
     events_summary = []
 
     async for ev in graph_app.astream_events(init_state, version="v2"):
-        # Optional: uncomment to see raw events once
-        # print("EVENT:", ev)
-
-        # We only care about node-level "on_end" events
         if ev.get("event") == "on_end" and ev.get("metadata", {}).get("source") == "node":
             node_name = ev["metadata"]["node"]
             state = ev["data"]["state"]
@@ -307,4 +341,3 @@ async def chat_debug(req: ChatRequest):
             )
 
     return JSONResponse(content={"events": events_summary})
-

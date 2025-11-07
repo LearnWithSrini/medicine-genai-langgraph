@@ -482,8 +482,3 @@ When you describe this project in an interview, focus on:
 10. Open the frontend in the browser and ask a question
 
 Once you can pass through those ten steps without errors, the project is “workable” end to end.
-
-```
-
-If you tell me your actual folder names or show `tree` of your repo, I can tighten the README so it matches your exact files line by line.
-```

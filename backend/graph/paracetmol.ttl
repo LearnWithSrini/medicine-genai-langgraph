@@ -1,0 +1,13 @@
+@prefix drug: <http://example.org/drug/> .
+@prefix dbo: <http://dbpedia.org/ontology/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+drug:Paracetamol a dbo:Drug ;
+    rdfs:label "Paracetamol" ;
+    dbo:chemicalFormula "C8H9NO2" ;
+    dbo:synonym "Acetaminophen" ;
+    dbo:mechanismOfAction "Inhibits prostaglandin synthesis in the central nervous system, lowering the hypothalamic set point for body temperature." ;
+    dbo:indication "Fever reduction and pain relief." ;
+    dbo:metabolism "Primarily hepatic via conjugation with glucuronide and sulfate." ;
+    dbo:excretion "Renal" ;
+    dbo:sideEffect "Liver toxicity in overdose." .

@@ -1,7 +1,7 @@
 """
 Populate the local SQLite database with sample citation data.
 
-Reads backend/data/sql/citations.csv and writes to backend/data/sql/biomed.db
+Reads backend/data/sql/citations.csv and writes to backend/data/medical.db
 using a table named 'citations'.
 """
 
@@ -13,9 +13,9 @@ import pandas as pd
 def main():
     # Paths
     base_dir = Path(__file__).resolve().parents[1]
-    data_dir = base_dir / "../data" / "sql"
+    data_dir = base_dir / "data"
     csv_path = data_dir / "citations.csv"
-    db_path = data_dir / "biomed.db"
+    db_path = data_dir / "medical.db"
 
     if not csv_path.exists():
         raise FileNotFoundError(f"Missing CSV file: {csv_path}")

@@ -1,2 +1,7 @@
 .env
 backend/.env
+.env
+chroma.sqlite
+.idea/
+length.bin
+.idea/*

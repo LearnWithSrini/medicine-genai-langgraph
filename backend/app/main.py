@@ -42,6 +42,7 @@ vector_collection = chroma_client.get_or_create_collection(
 class AgentState(BaseModel):
     messages: List[Dict[str, Any]]
     query: str
+    extracted_drug: Optional[str] = None  # NEW: normalized drug / formula name
     graph_results: Optional[List[Dict[str, Any]]] = None
     sql_results: Optional[List[Dict[str, Any]]] = None  # will hold citations
     rag_results: Optional[List[Dict[str, Any]]] = None
@@ -49,10 +50,46 @@ class AgentState(BaseModel):
 
 
 # -------------------------
+# Drug extractor node (LLM)
+# -------------------------
+async def extract_drug(state: AgentState) -> AgentState:
+    """
+    Use the LLM to pull out a single medicine / drug / formula name
+    from the user question and store it in state.extracted_drug.
+    """
+    prompt = (
+        "Extract the main medicine, drug, or chemical compound name from the question.\n"
+        "Respond with ONLY the name and nothing else.\n"
+        "If there is no clear drug name, respond with UNKNOWN.\n\n"
+        f"Question: {state.query}"
+    )
+
+    resp = oai_client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": "You extract drug names from questions."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.0,
+    )
+    raw = resp.choices[0].message.content.strip()
+
+    # Normalise a bit
+    if not raw or raw.upper() == "UNKNOWN":
+        extracted = None
+    else:
+        extracted = raw.strip()
+
+    state.extracted_drug = extracted
+    return state
+
+
+# -------------------------
 # GraphDB retriever (RDF)
 # -------------------------
 async def graph_retriever(state: AgentState) -> AgentState:
-    q = state.query.strip()
+    # Prefer extracted drug; fall back to full query if extraction failed
+    q = (state.extracted_drug or state.query).strip()
     # very small escape to avoid breaking the SPARQL with quotes
     q_escaped = q.replace('"', '\\"')
 
@@ -70,8 +107,8 @@ async def graph_retriever(state: AgentState) -> AgentState:
       OPTIONAL {{ ?drug dbo:indication ?indication . }}
 
       FILTER(
-        CONTAINS(LCASE(?label), LCASE("Paracetamol")) ||
-        CONTAINS(LCASE(COALESCE(?synonym, "")), LCASE("Paracetamol"))
+        CONTAINS(LCASE(?label), LCASE("{q_escaped}")) ||
+        CONTAINS(LCASE(COALESCE(?synonym, "")), LCASE("{q_escaped}"))
       )
     }}
     LIMIT 10
@@ -105,22 +142,28 @@ async def graph_retriever(state: AgentState) -> AgentState:
 # -------------------------
 # SQLite citations retriever
 # -------------------------
-def _run_citations_query(query_text: str) -> List[Dict[str, Any]]:
+def _run_citations_query(drug_term: str) -> List[Dict[str, Any]]:
     conn = sqlite3.connect(LOCAL_SQLITE_PATH)
     cur = conn.cursor()
 
-    # simple search on title / abstract / keywords
+    # If we somehow got an empty term, use a pattern that matches nothing
+    term = (drug_term or "").strip().lower()
+    if not term:
+        term = "__no_match__"
+
+    pattern = f"%{term}%"
+
     sql = """
     SELECT id, title, abstract, source, keywords
     FROM citations
     WHERE
-        LOWER(title)    LIKE '%paracetamol%' OR
-        LOWER(abstract) LIKE '%paracetamol%' OR
-        LOWER(keywords) LIKE '%paracetamol%'
+        LOWER(title)    LIKE ? OR
+        LOWER(abstract) LIKE ? OR
+        LOWER(keywords) LIKE ?
     LIMIT 10;
     """
 
-    cur.execute(sql)
+    cur.execute(sql, (pattern, pattern, pattern))
     rows = cur.fetchall()
     conn.close()
 
@@ -139,8 +182,9 @@ def _run_citations_query(query_text: str) -> List[Dict[str, Any]]:
 
 
 async def sql_retriever(state: AgentState) -> AgentState:
-    # For now we call sqlite synchronously; for heavy load you can offload to a thread pool
-    rows = _run_citations_query(state.query.strip())
+    # Prefer extracted drug; fall back to full query if needed
+    term = (state.extracted_drug or state.query).strip()
+    rows = _run_citations_query(term)
     state.sql_results = rows
     return state
 
@@ -152,15 +196,12 @@ async def rag_retriever(state: AgentState) -> AgentState:
     """
     Retrieve RAG context from a local Chroma collection.
 
-    Assumes you have ingested documents with something like:
-        collection.add(
-            ids=[...],
-            documents=[...],
-            metadatas=[{"source": "...", "topic": "...", "chunk_index": 0}, ...]
-        )
+    Uses the extracted drug / formula name as the query text.
     """
+    query_text = (state.extracted_drug or state.query).strip()
+
     res = vector_collection.query(
-        query_texts=["paracetmol"],
+        query_texts=[query_text],
         n_results=5,
     )
 
@@ -263,12 +304,17 @@ def build_workflow():
 
     workflow = StateGraph(AgentState)
 
+    # NEW: extraction node
+    workflow.add_node("extract_drug", extract_drug)
+
     workflow.add_node("graph_retriever", graph_retriever)
     workflow.add_node("sql_retriever", sql_retriever)
     workflow.add_node("rag_retriever", rag_retriever)
     workflow.add_node("answer_step", answer_node)
 
-    workflow.set_entry_point("graph_retriever")
+    # NEW entry point and edges
+    workflow.set_entry_point("extract_drug")
+    workflow.add_edge("extract_drug", "graph_retriever")
     workflow.add_edge("graph_retriever", "sql_retriever")
     workflow.add_edge("sql_retriever", "rag_retriever")
     workflow.add_edge("rag_retriever", "answer_step")
@@ -312,6 +358,7 @@ async def chat(req: ChatRequest):
         "graph_results": result_state.get("graph_results"),
         "sql_results": result_state.get("sql_results"),   # citations
         "rag_results": result_state.get("rag_results"),
+        "extracted_drug": result_state.get("extracted_drug"),
     }
 
 
@@ -333,6 +380,7 @@ async def chat_debug(req: ChatRequest):
                 {
                     "node": node_name,
                     "query": state.get("query"),
+                    "extracted_drug": state.get("extracted_drug"),
                     "graph_results_len": len(state.get("graph_results") or []),
                     "sql_results_len": len(state.get("sql_results") or []),
                     "rag_results_len": len(state.get("rag_results") or []),

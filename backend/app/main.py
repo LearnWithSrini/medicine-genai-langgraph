@@ -70,8 +70,8 @@ async def graph_retriever(state: AgentState) -> AgentState:
       OPTIONAL {{ ?drug dbo:indication ?indication . }}
 
       FILTER(
-        CONTAINS(LCASE(?label), LCASE("paracetmol")) ||
-        CONTAINS(LCASE(COALESCE(?synonym, "")), LCASE("paracetmol"))
+        CONTAINS(LCASE(?label), LCASE("Paracetamol")) ||
+        CONTAINS(LCASE(COALESCE(?synonym, "")), LCASE("Paracetamol"))
       )
     }}
     LIMIT 10
@@ -114,13 +114,13 @@ def _run_citations_query(query_text: str) -> List[Dict[str, Any]]:
     SELECT id, title, abstract, source, keywords
     FROM citations
     WHERE
-        LOWER(title)    LIKE '%' || LOWER(?) || '%' OR
-        LOWER(abstract) LIKE '%' || LOWER(?) || '%' OR
-        LOWER(keywords) LIKE '%' || LOWER(?) || '%'
+        LOWER(title)    LIKE '%paracetamol%' OR
+        LOWER(abstract) LIKE '%paracetamol%' OR
+        LOWER(keywords) LIKE '%paracetamol%'
     LIMIT 10;
     """
 
-    cur.execute(sql, ("paracetmol", "paracetmol", "paracetmol"))
+    cur.execute(sql)
     rows = cur.fetchall()
     conn.close()
 

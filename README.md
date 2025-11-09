@@ -477,8 +477,8 @@ When you describe this project in an interview, focus on:
 5. `python -m scripts.ingest_pdfs`
 6. `python -m scripts.load_rdf`
 7. `python -m scripts.seed_sql_demo`
-8. `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`
-9. `cd ../frontend && npm install && npm run dev`
+8. `uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug` #from project root folder
+9. `npm install && npm run dev` #from project root folder
 10. Open the frontend in the browser and ask a question
 
 Once you can pass through those ten steps without errors, the project is “workable” end to end.
